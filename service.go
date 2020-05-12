@@ -7,6 +7,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -67,8 +68,41 @@ func (a AdmManager) Logging(n *Nothing, logServer Admin_LoggingServer) error {
 
 func (a AdmManager) Statistics(interval *StatInterval, statServer Admin_StatisticsServer) error {
 	_, err := a.ACLService(statServer.Context(), "/main.Admin/Statistics", "/main.Admin/*")
+	started := int(time.Now().UnixNano())
 	if err != nil {
 		return err
+	}
+	sendIndexes := make([]int, 0)
+	for {
+		wasNewStat := false
+		time.Sleep(time.Second * time.Duration(interval.IntervalSeconds))
+		newStat := Stat{
+			ByConsumer: make(map[string]uint64),
+			ByMethod:   make(map[string]uint64),
+		}
+		a.mu.RLock()
+		for key, value := range a.events {
+			if key > started && !contain(sendIndexes, key) {
+				sendIndexes = append(sendIndexes, key)
+				wasNewStat = true
+				if countConsumer, ok := newStat.ByConsumer[value.Consumer]; ok {
+					newStat.ByConsumer[value.Consumer] = countConsumer + 1
+				} else {
+					newStat.ByConsumer[value.Consumer] = 1
+				}
+				if countMethod, ok := newStat.ByMethod[value.Method]; ok {
+					newStat.ByMethod[value.Method] = countMethod + 1
+				} else {
+					newStat.ByMethod[value.Method] = 1
+				}
+			}
+		}
+		a.mu.RUnlock()
+		if !wasNewStat {
+			return io.EOF
+		} else {
+			statServer.Send(&newStat)
+		}
 	}
 	return nil
 }
